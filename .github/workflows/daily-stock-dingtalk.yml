@@ -1,0 +1,66 @@
+name: Daily Stock Analysis + DingTalk Push
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  analyze-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt || true
+
+      - name: Run daily stock analysis
+        id: analysis
+        run: |
+          python main.py > report.md 2>&1 || true
+          echo "report_path=report.md" >> $GITHUB_OUTPUT
+
+      - name: Read report and prepare DingTalk message
+        id: prepare
+        run: |
+          if [ -f report.md ]; then
+            REPORT=$(cat report.md)
+          else
+            REPORT="今日报告生成失败，请检查脚本运行状态。"
+          fi
+          REPORT_SHORT="${REPORT:0:2000}"
+          if [ ${#REPORT} -gt 2000 ]; then
+            REPORT_SHORT="${REPORT_SHORT}..."
+          fi
+          REPORT_ESCAPED=$(echo "$REPORT_SHORT" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g; s/\r//g')
+          cat > dingtalk_payload.json << EOF
+          {
+            "msgtype": "markdown",
+            "markdown": {
+              "title": "持仓日报",
+              "text": "## 持仓日报 $(date +%Y-%m-%d)\n\n${REPORT_ESCAPED}\n\n---\n_由 GitHub Actions 自动推送_"
+            }
+          }
+          EOF
+          echo "payload_path=dingtalk_payload.json" >> $GITHUB_OUTPUT
+
+      - name: Push to DingTalk
+        run: |
+          curl -s -X POST "${{ secrets.DINGTALK_WEBHOOK }}" \
+            -H "Content-Type: application/json" \
+            -d @dingtalk_payload.json
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-report-${{ github.run_id }}
+          path: report.md
+          retention-days: 7
